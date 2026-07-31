@@ -249,7 +249,7 @@ app.get("/api/reservations", requireAuth, ah(async (req, res) => {
   const end = req.query.end;
   let rows: ReservationRow[];
   if (start && end) {
-    rows = await reservationsInRange(String(end), String(start));
+    rows = await reservationsInRange(String(start), String(end));
   } else {
     rows = await allReservations();
   }
