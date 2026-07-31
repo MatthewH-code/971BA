@@ -3,14 +3,22 @@ import { getSetting } from "./db.js";
 import { buildInvite, buildCancel } from "./ics.js";
 import type { Invitee, ReservationRow, SmtpConfig } from "./types.js";
 
-export function getSmtp(): SmtpConfig {
+export async function getSmtp(): Promise<SmtpConfig> {
+  const [host, port, secure, user, pass, from] = await Promise.all([
+    getSetting("smtp_host"),
+    getSetting("smtp_port"),
+    getSetting("smtp_secure"),
+    getSetting("smtp_user"),
+    getSetting("smtp_pass"),
+    getSetting("smtp_from"),
+  ]);
   return {
-    host: getSetting("smtp_host") || "",
-    port: Number(getSetting("smtp_port") || 587),
-    secure: getSetting("smtp_secure") === "1",
-    user: getSetting("smtp_user") || "",
-    pass: getSetting("smtp_pass") || "",
-    from: getSetting("smtp_from") || "",
+    host: host || "",
+    port: Number(port || 587),
+    secure: secure === "1",
+    user: user || "",
+    pass: pass || "",
+    from: from || "",
   };
 }
 
@@ -48,7 +56,7 @@ async function sendIcsMail({ smtp, to, subject, text, ics, method }: IcsMailInpu
 }
 
 export async function sendInvite(rec: ReservationRow, invitees: Invitee[]): Promise<string> {
-  const smtp = getSmtp();
+  const smtp = await getSmtp();
   if (!smtpConfigured(smtp)) return "not_configured";
   const ics = buildInvite(rec, invitees, { from: smtp.from });
   await sendIcsMail({
@@ -63,7 +71,7 @@ export async function sendInvite(rec: ReservationRow, invitees: Invitee[]): Prom
 }
 
 export async function sendCancellation(rec: ReservationRow, invitees: Invitee[]): Promise<string> {
-  const smtp = getSmtp();
+  const smtp = await getSmtp();
   if (!smtpConfigured(smtp)) return "not_configured";
   const ics = buildCancel(rec, invitees, { from: smtp.from });
   await sendIcsMail({

@@ -1,30 +1,47 @@
 import express from "express";
-import session from "express-session";
+import type { NextFunction, Request, RequestHandler, Response } from "express";
 import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import db, { getSetting, setSetting } from "./db.js";
-import { verify, requireAuth } from "./auth.js";
+import {
+  getSetting,
+  setSetting,
+  allReservations,
+  reservationsInRange,
+  reservationsStartingIn,
+  getReservation,
+  createReservation,
+  updateReservation,
+  deleteReservation,
+  updateInviteStatus,
+  latestHobbsEnd,
+  allPilots,
+  getPilot,
+  getPilotByEmail,
+  getPilotByEmailExcept,
+  insertPilot,
+  updatePilot,
+  deletePilot,
+} from "./db.js";
+import { verify, isAuthenticated, setAuthCookie, clearAuthCookie, requireAuth } from "./auth.js";
 import { getSmtp, smtpConfigured, sendInvite, sendCancellation, sendTestEmail } from "./mailer.js";
 import type { Invitee, PilotRow, ReservationRow } from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
 const DIST_DIR = path.join(__dirname, "..", "dist");
-const SESSION_SECRET = process.env.SESSION_SECRET || "eclipse500-dev-secret";
 
 const app = express();
 app.use(express.json());
-app.use(
-  session({
-    name: "n971ba.sid",
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: { httpOnly: true, sameSite: "lax", maxAge: 30 * 24 * 60 * 60 * 1000 },
-  })
-);
+
+type AsyncHandler = (req: Request, res: Response) => Promise<unknown>;
+
+function ah(fn: AsyncHandler): RequestHandler {
+  return (req, res, next) => {
+    void fn(req, res).catch(next);
+  };
+}
 
 function isValidDate(s: unknown): boolean {
   return typeof s === "string" && !Number.isNaN(Date.parse(s));
@@ -68,15 +85,17 @@ interface OverlapRow {
   end_time: string;
 }
 
-function overlaps(start: string, end: string, excludeId: number | null): OverlapRow | undefined {
-  const rows = db
-    .prepare("SELECT id, title, start_time, end_time FROM reservations")
-    .all() as OverlapRow[];
+async function overlaps(
+  start: string,
+  end: string,
+  excludeId: number | null
+): Promise<OverlapRow | undefined> {
+  const rows = await allReservations();
   return rows.find((r) => r.id !== excludeId && r.start_time < end && start < r.end_time);
 }
 
-function smtpPayload() {
-  const s = getSmtp();
+async function smtpPayload() {
+  const s = await getSmtp();
   return {
     host: s.host,
     port: s.port,
@@ -90,21 +109,14 @@ function smtpPayload() {
 
 const INSPECTION_INTERVAL = 100;
 
-function currentHobbs(): number | null {
-  const row = db
-    .prepare(
-      "SELECT hobbs_end FROM reservations WHERE hobbs_end IS NOT NULL ORDER BY start_time DESC, id DESC LIMIT 1"
-    )
-    .get() as { hobbs_end: number } | undefined;
-  return row ? row.hobbs_end : null;
-}
-
-function inspectionStatus() {
-  const raw = getSetting("inspection_hobbs");
+async function inspectionStatus() {
+  const [raw, date, cur] = await Promise.all([
+    getSetting("inspection_hobbs"),
+    getSetting("inspection_date"),
+    latestHobbsEnd(),
+  ]);
   const hobbs =
     raw !== null && raw !== "" && !Number.isNaN(Number(raw)) ? Number(raw) : null;
-  const date = getSetting("inspection_date");
-  const cur = currentHobbs();
   return {
     hobbs,
     date,
@@ -114,46 +126,49 @@ function inspectionStatus() {
   };
 }
 
+/* ---------- Auth ---------- */
+
 app.get("/api/me", (req, res) => {
-  res.json({ authenticated: Boolean(req.session && req.session.authenticated) });
+  res.json({ authenticated: isAuthenticated(req) });
 });
 
 app.post("/api/login", (req, res) => {
   const { password } = req.body || {};
   if (verify(String(password))) {
-    req.session.authenticated = true;
+    setAuthCookie(res);
     return res.json({ ok: true });
   }
   return res.status(401).json({ error: "Incorrect password" });
 });
 
 app.post("/api/logout", (req, res) => {
-  req.session.destroy(() => res.json({ ok: true }));
+  clearAuthCookie(res);
+  res.json({ ok: true });
 });
 
 /* ---------- Settings ---------- */
 
-app.get("/api/settings", requireAuth, (req, res) => {
-  const pilots = db.prepare("SELECT * FROM pilots ORDER BY name").all() as PilotRow[];
-  res.json({ pilots, smtp: smtpPayload() });
-});
+app.get("/api/settings", requireAuth, ah(async (req, res) => {
+  const pilots = await allPilots();
+  res.json({ pilots, smtp: await smtpPayload() });
+}));
 
-app.post("/api/settings/pilots", requireAuth, (req, res) => {
+app.post("/api/settings/pilots", requireAuth, ah(async (req, res) => {
   const { name, email } = req.body || {};
   const n = String(name || "").trim();
   const e = String(email || "").trim();
   if (!n || !isValidEmail(e)) {
     return res.status(400).json({ error: "A name and a valid email are required" });
   }
-  const dup = db.prepare("SELECT id FROM pilots WHERE email = ?").get(e);
+  const dup = await getPilotByEmail(e);
   if (dup) return res.status(409).json({ error: "A pilot with that email already exists" });
-  const info = db.prepare("INSERT INTO pilots (name, email) VALUES (?, ?)").run(n, e);
-  res.status(201).json(db.prepare("SELECT * FROM pilots WHERE id = ?").get(info.lastInsertRowid));
-});
+  const row = await insertPilot(n, e);
+  res.status(201).json(row);
+}));
 
-app.patch("/api/settings/pilots/:id", requireAuth, (req, res) => {
+app.patch("/api/settings/pilots/:id", requireAuth, ah(async (req, res) => {
   const id = Number(req.params.id);
-  const row = db.prepare("SELECT * FROM pilots WHERE id = ?").get(id) as PilotRow | undefined;
+  const row = await getPilot(id);
   if (!row) return res.status(404).json({ error: "Pilot not found" });
 
   const { name, email } = req.body || {};
@@ -162,33 +177,34 @@ app.patch("/api/settings/pilots/:id", requireAuth, (req, res) => {
   if (!n || !isValidEmail(e)) {
     return res.status(400).json({ error: "A name and a valid email are required" });
   }
-  const dup = db.prepare("SELECT id FROM pilots WHERE email = ? AND id != ?").get(e, id);
+  const dup = await getPilotByEmailExcept(e, id);
   if (dup) return res.status(409).json({ error: "A pilot with that email already exists" });
 
-  db.prepare("UPDATE pilots SET name = ?, email = ? WHERE id = ?").run(n, e, id);
-  res.json(db.prepare("SELECT * FROM pilots WHERE id = ?").get(id));
-});
+  const updated = await updatePilot(id, n, e);
+  if (!updated) return res.status(404).json({ error: "Pilot not found" });
+  res.json(updated);
+}));
 
-app.delete("/api/settings/pilots/:id", requireAuth, (req, res) => {
-  const info = db.prepare("DELETE FROM pilots WHERE id = ?").run(Number(req.params.id));
-  if (info.changes === 0) return res.status(404).json({ error: "Pilot not found" });
+app.delete("/api/settings/pilots/:id", requireAuth, ah(async (req, res) => {
+  const ok = await deletePilot(Number(req.params.id));
+  if (!ok) return res.status(404).json({ error: "Pilot not found" });
   res.json({ ok: true });
-});
+}));
 
-app.patch("/api/settings/smtp", requireAuth, (req, res) => {
+app.patch("/api/settings/smtp", requireAuth, ah(async (req, res) => {
   const { host, port, secure, user, password, from } = req.body || {};
-  if (host !== undefined) setSetting("smtp_host", String(host).trim());
-  if (port !== undefined) setSetting("smtp_port", String(port));
-  if (secure !== undefined) setSetting("smtp_secure", secure ? "1" : "0");
-  if (user !== undefined) setSetting("smtp_user", String(user).trim());
-  if (password) setSetting("smtp_pass", password);
-  if (from !== undefined) setSetting("smtp_from", String(from).trim());
-  res.json({ ok: true, smtp: smtpPayload() });
-});
+  if (host !== undefined) await setSetting("smtp_host", String(host).trim());
+  if (port !== undefined) await setSetting("smtp_port", String(port));
+  if (secure !== undefined) await setSetting("smtp_secure", secure ? "1" : "0");
+  if (user !== undefined) await setSetting("smtp_user", String(user).trim());
+  if (password) await setSetting("smtp_pass", password);
+  if (from !== undefined) await setSetting("smtp_from", String(from).trim());
+  res.json({ ok: true, smtp: await smtpPayload() });
+}));
 
-app.post("/api/settings/test-email", requireAuth, async (req, res) => {
+app.post("/api/settings/test-email", requireAuth, ah(async (req, res) => {
   const { to } = req.body || {};
-  const smtp = getSmtp();
+  const smtp = await getSmtp();
   if (!smtpConfigured(smtp)) return res.status(400).json({ error: "Configure SMTP first" });
   if (!isValidEmail(String(to || ""))) return res.status(400).json({ error: "Enter a valid email" });
   try {
@@ -197,62 +213,56 @@ app.post("/api/settings/test-email", requireAuth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
-});
+}));
 
 /* ---------- 100-hour inspection ---------- */
 
-app.get("/api/inspection", requireAuth, (req, res) => {
-  res.json(inspectionStatus());
-});
+app.get("/api/inspection", requireAuth, ah(async (req, res) => {
+  res.json(await inspectionStatus());
+}));
 
-app.patch("/api/inspection", requireAuth, (req, res) => {
+app.patch("/api/inspection", requireAuth, ah(async (req, res) => {
   const { hobbs, date } = req.body || {};
   if (hobbs !== undefined) {
     if (hobbs === "") {
-      setSetting("inspection_hobbs", "");
+      await setSetting("inspection_hobbs", "");
     } else {
       const h = Number(hobbs);
       if (Number.isNaN(h) || h < 0) {
         return res.status(400).json({ error: "Invalid Hobbs reading" });
       }
-      setSetting("inspection_hobbs", h);
+      await setSetting("inspection_hobbs", h);
     }
   }
   if (date !== undefined) {
     const d = String(date).trim();
     if (d && !isValidDate(d)) return res.status(400).json({ error: "Invalid date" });
-    setSetting("inspection_date", d);
+    await setSetting("inspection_date", d);
   }
-  res.json(inspectionStatus());
-});
+  res.json(await inspectionStatus());
+}));
 
 /* ---------- Reservations ---------- */
 
-app.get("/api/reservations", requireAuth, (req, res) => {
+app.get("/api/reservations", requireAuth, ah(async (req, res) => {
   const start = req.query.start;
   const end = req.query.end;
   let rows: ReservationRow[];
   if (start && end) {
-    rows = db
-      .prepare(
-        "SELECT * FROM reservations WHERE start_time < ? AND end_time > ? ORDER BY start_time"
-      )
-      .all(String(end), String(start)) as ReservationRow[];
+    rows = await reservationsInRange(String(end), String(start));
   } else {
-    rows = db.prepare("SELECT * FROM reservations ORDER BY start_time").all() as ReservationRow[];
+    rows = await allReservations();
   }
   res.json(rows);
-});
+}));
 
-app.get("/api/reservations/:id", requireAuth, (req, res) => {
-  const row = db
-    .prepare("SELECT * FROM reservations WHERE id = ?")
-    .get(Number(req.params.id)) as ReservationRow | undefined;
+app.get("/api/reservations/:id", requireAuth, ah(async (req, res) => {
+  const row = await getReservation(Number(req.params.id));
   if (!row) return res.status(404).json({ error: "Reservation not found" });
   res.json(row);
-});
+}));
 
-app.post("/api/reservations", requireAuth, (req, res) => {
+app.post("/api/reservations", requireAuth, ah(async (req, res) => {
   const { title, person, start, end, invitees } = req.body || {};
   const t = String(title || "").trim();
   const p = String(person || "").trim();
@@ -264,7 +274,7 @@ app.post("/api/reservations", requireAuth, (req, res) => {
   if (start >= end) {
     return res.status(400).json({ error: "End must be after start" });
   }
-  const conflict = overlaps(start, end, null);
+  const conflict = await overlaps(start, end, null);
   if (conflict) {
     return res.status(409).json({
       error: `Time conflicts with "${conflict.title}" (${conflict.start_time} – ${conflict.end_time})`,
@@ -273,46 +283,41 @@ app.post("/api/reservations", requireAuth, (req, res) => {
 
   const parsedInvitees = parseInvitees(invitees);
   const uid = crypto.randomUUID();
-  const info = db
-    .prepare(
-      "INSERT INTO reservations (title, person, start_time, end_time, bill_to, uid, invitees, invite_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    )
-    .run(t, p, start, end, p, uid, JSON.stringify(parsedInvitees), "pending");
-  const row = db
-    .prepare("SELECT * FROM reservations WHERE id = ?")
-    .get(info.lastInsertRowid) as ReservationRow;
+  const row = await createReservation({
+    title: t,
+    person: p,
+    start_time: start,
+    end_time: end,
+    bill_to: p,
+    uid,
+    invitees: JSON.stringify(parsedInvitees),
+  });
   res.status(201).json(row);
 
   if (parsedInvitees.length === 0) {
-    db.prepare("UPDATE reservations SET invite_status = ? WHERE id = ?").run("skipped", row.id);
+    await updateInviteStatus(row.id, "skipped");
     return;
   }
   sendInvite(row, parsedInvitees)
-    .then((status) => {
-      db.prepare("UPDATE reservations SET invite_status = ? WHERE id = ?").run(status, row.id);
-    })
+    .then((status) => updateInviteStatus(row.id, status))
     .catch((err) => {
       console.error("Invite send failed:", (err as Error).message);
-      db.prepare("UPDATE reservations SET invite_status = ? WHERE id = ?").run("failed", row.id);
+      updateInviteStatus(row.id, "failed").catch(() => {});
     });
-});
+}));
 
-app.patch("/api/reservations/:id", requireAuth, (req, res) => {
+app.patch("/api/reservations/:id", requireAuth, ah(async (req, res) => {
   const id = Number(req.params.id);
-  const row = db.prepare("SELECT * FROM reservations WHERE id = ?").get(id) as
-    | ReservationRow
-    | undefined;
+  const row = await getReservation(id);
   if (!row) return res.status(404).json({ error: "Reservation not found" });
 
   const { billTo, hobbsStart, hobbsEnd, fuelUsed } = req.body || {};
-  const sets: string[] = [];
-  const params: (string | number)[] = [];
+  const cols: Record<string, string | number> = {};
 
   if (billTo !== undefined) {
     const b = String(billTo).trim();
     if (!b) return res.status(400).json({ error: "Bill-to cannot be empty" });
-    sets.push("bill_to = ?");
-    params.push(b);
+    cols.bill_to = b;
   }
   if (hobbsStart !== undefined || hobbsEnd !== undefined) {
     const hs = hobbsStart !== undefined ? Number(hobbsStart) : null;
@@ -329,43 +334,30 @@ app.patch("/api/reservations/:id", requireAuth, (req, res) => {
       if (finalHe < finalHs) {
         return res.status(400).json({ error: "Hobbs end must be >= start" });
       }
-      sets.push("flight_hours = ?");
-      params.push(Math.round((finalHe - finalHs) * 100) / 100);
+      cols.flight_hours = Math.round((finalHe - finalHs) * 100) / 100;
     }
-    if (hs !== null) {
-      sets.push("hobbs_start = ?");
-      params.push(hs);
-    }
-    if (he !== null) {
-      sets.push("hobbs_end = ?");
-      params.push(he);
-    }
+    if (hs !== null) cols.hobbs_start = hs;
+    if (he !== null) cols.hobbs_end = he;
   }
   if (fuelUsed !== undefined) {
     const f = Number(fuelUsed);
     if (Number.isNaN(f) || f < 0) return res.status(400).json({ error: "Invalid fuel used" });
-    sets.push("fuel_used = ?");
-    params.push(f);
+    cols.fuel_used = f;
   }
-  if (sets.length === 0) {
+  if (Object.keys(cols).length === 0) {
     return res.status(400).json({ error: "Nothing to update" });
   }
 
-  params.push(id);
-  db.prepare(`UPDATE reservations SET ${sets.join(", ")} WHERE id = ?`).run(...params);
-  const updated = db
-    .prepare("SELECT * FROM reservations WHERE id = ?")
-    .get(id) as ReservationRow;
+  const updated = await updateReservation(id, cols);
+  if (!updated) return res.status(404).json({ error: "Reservation not found" });
   res.json(updated);
-});
+}));
 
-app.delete("/api/reservations/:id", requireAuth, (req, res) => {
+app.delete("/api/reservations/:id", requireAuth, ah(async (req, res) => {
   const id = Number(req.params.id);
-  const row = db.prepare("SELECT * FROM reservations WHERE id = ?").get(id) as
-    | ReservationRow
-    | undefined;
+  const row = await getReservation(id);
   if (!row) return res.status(404).json({ error: "Reservation not found" });
-  db.prepare("DELETE FROM reservations WHERE id = ?").run(id);
+  await deleteReservation(id);
   res.json({ ok: true });
 
   const invitees = safeParseJson<Invitee[]>(row.invitees, []);
@@ -374,19 +366,15 @@ app.delete("/api/reservations/:id", requireAuth, (req, res) => {
       console.error("Cancellation send failed:", (err as Error).message);
     });
   }
-});
+}));
 
 /* ---------- Stats ---------- */
 
-app.get("/api/stats", requireAuth, (req, res) => {
+app.get("/api/stats", requireAuth, ah(async (req, res) => {
   const start = req.query.start;
   const end = req.query.end;
   const billTo = typeof req.query.billTo === "string" ? req.query.billTo : "";
-  let rows = db
-    .prepare(
-      "SELECT * FROM reservations WHERE start_time >= ? AND start_time < ? ORDER BY start_time"
-    )
-    .all(String(start), String(end)) as ReservationRow[];
+  let rows = await reservationsStartingIn(String(start), String(end));
 
   const billToOptions = [
     ...new Set(rows.map((r) => r.bill_to || r.person || "Unknown")),
@@ -432,9 +420,9 @@ app.get("/api/stats", requireAuth, (req, res) => {
     byBillTo: Array.from(byBillTo, ([name, v]) => ({ name, ...v })).sort(
       (a, b) => b.hours - a.hours
     ),
-    inspection: inspectionStatus(),
+    inspection: await inspectionStatus(),
   });
-});
+}));
 
 if (fs.existsSync(DIST_DIR)) {
   app.use(express.static(DIST_DIR));
@@ -443,6 +431,15 @@ if (fs.existsSync(DIST_DIR)) {
   });
 }
 
-app.listen(PORT, () => {
-  console.log(`971BA scheduler listening on http://localhost:${PORT}`);
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  console.error("Unhandled error:", err);
+  res.status(500).json({ error: "Internal server error" });
 });
+
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`971BA scheduler listening on http://localhost:${PORT}`);
+  });
+}
+
+export default app;
