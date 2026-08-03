@@ -46,7 +46,7 @@ export default function ReservationsPage() {
       if (filter === "Past") return new Date(r.end_time) <= now;
       return true;
     })
-    .sort((a, b) => a.start_time.localeCompare(b.start_time));
+    .sort((a, b) => b.start_time.localeCompare(a.start_time));
 
   async function remove(r: Reservation) {
     if (!window.confirm(`Cancel "${r.title}"?`)) return;
