@@ -35,6 +35,16 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
     sans-serif;
   background-color: #0e1420;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
   background-image: linear-gradient(
       180deg,
       rgba(8, 12, 19, 0.78) 0%,
@@ -43,11 +53,7 @@ body {
     url("/background.jpg");
   background-size: cover;
   background-position: center;
-  background-attachment: fixed;
   background-repeat: no-repeat;
-  color: var(--text);
-  font-size: 15px;
-  line-height: 1.45;
 }
 
 h2 {
@@ -866,10 +872,6 @@ button.link-button:hover {
 
 /* ---------- Mobile ---------- */
 @media (max-width: 760px) {
-  body {
-    background-attachment: scroll;
-  }
-
   .content {
     padding: 12px;
   }
