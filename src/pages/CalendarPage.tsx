@@ -334,7 +334,11 @@ export default function CalendarPage() {
                 type="datetime-local"
                 value={toDateTimeLocal(booking.start)}
                 onChange={(e) =>
-                  setBooking((b) => (b ? { ...b, start: new Date(e.target.value) } : b))
+                  setBooking((b) => {
+                    if (!b) return b;
+                    const start = new Date(e.target.value);
+                    return { start, end: new Date(start.getTime() + 60 * 60 * 1000) };
+                  })
                 }
               />
             </div>
