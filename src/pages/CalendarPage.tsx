@@ -29,6 +29,9 @@ interface Booking {
 export default function CalendarPage() {
   const calendarRef = useRef<FullCalendar | null>(null);
   const [events, setEvents] = useState<EventInput[]>([]);
+  const [initialView] = useState(() =>
+    typeof window !== "undefined" && window.innerWidth < 768 ? "timeGridDay" : "timeGridWeek"
+  );
   const [loading, setLoading] = useState(false);
   const [booking, setBooking] = useState<Booking | null>(null);
   const [title, setTitle] = useState("");
@@ -274,11 +277,13 @@ export default function CalendarPage() {
         <FullCalendar
           ref={calendarRef}
           plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
-          initialView="timeGridWeek"
+          initialView={initialView}
           height="auto"
           allDaySlot={false}
           nowIndicator
           selectable
+          longPressDelay={150}
+          selectLongPressDelay={150}
           selectOverlap={false}
           editable={false}
           eventOverlap={false}

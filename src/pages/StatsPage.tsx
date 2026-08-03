@@ -158,9 +158,9 @@ export default function StatsPage() {
                 {stats.byBillTo.map((b) => (
                   <tr key={b.name}>
                     <td className="strong">{b.name}</td>
-                    <td className="num">{b.flights}</td>
-                    <td className="num">{fmt(b.hours)}</td>
-                    <td className="num">{fmt(b.fuel)}</td>
+                    <td className="num" data-label="Flights">{b.flights}</td>
+                    <td className="num" data-label="Hours">{fmt(b.hours)}</td>
+                    <td className="num" data-label="Fuel">{fmt(b.fuel)}</td>
                     <td>
                       <div className="bar-wrap">
                         <div

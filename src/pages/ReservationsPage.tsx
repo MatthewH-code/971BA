@@ -110,19 +110,19 @@ export default function ReservationsPage() {
             {rows.map((r) => (
               <tr key={r.id}>
                 <td className="strong">{r.title}</td>
-                <td>{r.person}</td>
-                <td>{fmtDateTime(r.start_time)}</td>
-                <td>{fmtDateTime(r.end_time)}</td>
-                <td>{r.bill_to || "—"}</td>
-                <td className="num">
+                <td data-label="Reserved by">{r.person}</td>
+                <td data-label="Start">{fmtDateTime(r.start_time)}</td>
+                <td data-label="End">{fmtDateTime(r.end_time)}</td>
+                <td data-label="Bill to">{r.bill_to || "—"}</td>
+                <td className="num" data-label="Hours">
                   {r.hobbs_start != null && r.hobbs_end != null
                     ? Math.round((r.hobbs_end - r.hobbs_start) * 100) / 100
                     : r.flight_hours != null
                       ? r.flight_hours
                       : "—"}
                 </td>
-                <td className="num">{r.fuel_used != null ? r.fuel_used : "—"}</td>
-                <td>
+                <td className="num" data-label="Fuel">{r.fuel_used != null ? r.fuel_used : "—"}</td>
+                <td data-label="Invite">
                   {r.invite_status && INVITE_STATUS[r.invite_status] ? (
                     <span className={INVITE_STATUS[r.invite_status].cls}>
                       {INVITE_STATUS[r.invite_status].label}
@@ -131,14 +131,14 @@ export default function ReservationsPage() {
                     <span className="muted small">—</span>
                   )}
                 </td>
-                <td>
+                <td data-label="Flight data">
                   {r.hobbs_start != null && r.hobbs_end != null && r.fuel_used != null ? (
                     <span className="logged-badge">Logged</span>
                   ) : (
                     <span className="muted small">Not logged</span>
                   )}
                 </td>
-                <td className="row-actions">
+                <td className="row-actions" data-label="Actions">
                   <button className="ghost small" onClick={() => openEditor(r)}>
                     Log flight
                   </button>
