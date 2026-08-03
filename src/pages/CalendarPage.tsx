@@ -3,6 +3,7 @@ import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
+import type { DateClickArg } from "@fullcalendar/interaction";
 import type { EventInput, DateSelectArg, EventClickArg, EventMountArg, DatesSetArg } from "@fullcalendar/core";
 import { api } from "../api";
 import { toLocalIso, toDateTimeLocal, fmtTime, fmtDate, textOverflows, measureTextWidth } from "../utils";
@@ -31,6 +32,9 @@ export default function CalendarPage() {
   const [events, setEvents] = useState<EventInput[]>([]);
   const [initialView] = useState(() =>
     typeof window !== "undefined" && window.innerWidth < 768 ? "timeGridDay" : "timeGridWeek"
+  );
+  const [isMobile] = useState(() =>
+    typeof window !== "undefined" && window.innerWidth < 768
   );
   const [loading, setLoading] = useState(false);
   const [booking, setBooking] = useState<Booking | null>(null);
@@ -104,6 +108,16 @@ export default function CalendarPage() {
     if (info.allDay) {
       start = new Date(info.start.getFullYear(), info.start.getMonth(), info.start.getDate(), 9, 0);
       end = new Date(info.start.getFullYear(), info.start.getMonth(), info.start.getDate(), 10, 0);
+    }
+    openBooking(start, end);
+  }
+
+  function handleDateClick(info: DateClickArg) {
+    let start: Date = info.date;
+    let end = new Date(start.getTime() + 60 * 60 * 1000);
+    if (info.allDay) {
+      start = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 9, 0);
+      end = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 10, 0);
     }
     openBooking(start, end);
   }
@@ -268,8 +282,8 @@ export default function CalendarPage() {
       <div className="page-head">
         <h2>Schedule</h2>
         <p className="muted">
-          Reserved times appear on the calendar. Click and drag on the grid to block off a
-          new reservation, or use Book.
+          Reserved times appear on the calendar. Tap a time to book, or click and drag on the
+          grid to block off a range.
         </p>
       </div>
       {loading && <p className="muted small">Loading…</p>}
@@ -281,9 +295,7 @@ export default function CalendarPage() {
           height="auto"
           allDaySlot={false}
           nowIndicator
-          selectable
-          longPressDelay={150}
-          selectLongPressDelay={150}
+          selectable={!isMobile}
           selectOverlap={false}
           editable={false}
           eventOverlap={false}
@@ -298,6 +310,7 @@ export default function CalendarPage() {
           eventMinHeight={26}
           events={events}
           select={handleSelect}
+          dateClick={handleDateClick}
           eventClick={openLogModal}
           eventDidMount={eventDidMount}
           datesSet={(info: DatesSetArg) =>
