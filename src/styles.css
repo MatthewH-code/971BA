@@ -44,7 +44,6 @@ html {
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
     sans-serif;
-  background-color: #0e1420;
   color: var(--text);
   font-size: 15px;
   line-height: 1.45;
